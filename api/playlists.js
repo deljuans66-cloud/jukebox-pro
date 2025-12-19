@@ -1,54 +1,72 @@
 import express from "express";
-const router = express.Router();
-export default router;
+import { requireUser } from "../auth/middleware.js";
 
 import {
+  getPlaylistsByUserId,
   createPlaylist,
   getPlaylistById,
-  getPlaylists,
 } from "#db/queries/playlists";
-import { createPlaylistTrack } from "#db/queries/playlists_tracks";
-import { getTracksByPlaylistId } from "#db/queries/tracks";
+import { getTracksForPlaylist } from "#db/queries/playlists_tracks";
 
-router.get("/", async (req, res) => {
-  const playlists = await getPlaylists();
-  res.send(playlists);
+const router = express.Router();
+
+// 🔒 all playlists routes require login
+router.use(requireUser);
+
+// GET /playlists (owned by user)
+router.get("/", async (req, res, next) => {
+  try {
+    const playlists = await getPlaylistsByUserId(req.user.id);
+    res.json(playlists);
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.post("/", async (req, res) => {
-  if (!req.body) return res.status(400).send("Request body is required.");
+// POST /playlists (create owned by user)
+router.post("/", async (req, res, next) => {
+  try {
+    const { name, description } = req.body ?? {};
+    if (!name || !description) {
+      return res.status(400).json({ error: "name and description required" });
+    }
 
-  const { name, description } = req.body;
-  if (!name || !description)
-    return res.status(400).send("Request body requires: name, description");
-
-  const playlist = await createPlaylist(name, description);
-  res.status(201).send(playlist);
+    const playlist = await createPlaylist(req.user.id, name, description);
+    res.status(201).json(playlist);
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.param("id", async (req, res, next, id) => {
-  const playlist = await getPlaylistById(id);
-  if (!playlist) return res.status(404).send("Playlist not found.");
-
+// helper: load + ownership check
+async function loadOwnedPlaylist(req, res, next) {
+  const playlist = await getPlaylistById(req.params.id);
+  if (!playlist) return res.status(404).json({ error: "playlist not found" });
+  if (playlist.user_id !== req.user.id)
+    return res.status(403).json({ error: "forbidden" });
   req.playlist = playlist;
   next();
+}
+
+// GET /playlists/:id (403 if not owner)
+router.get("/:id", async (req, res, next) => {
+  try {
+    await loadOwnedPlaylist(req, res, () => res.json(req.playlist));
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.get("/:id", (req, res) => {
-  res.send(req.playlist);
+// GET /playlists/:id/tracks (403 if not owner)
+router.get("/:id/tracks", async (req, res, next) => {
+  try {
+    await loadOwnedPlaylist(req, res, async () => {
+      const tracks = await getTracksForPlaylist(req.playlist.id);
+      res.json(tracks);
+    });
+  } catch (err) {
+    next(err);
+  }
 });
 
-router.get("/:id/tracks", async (req, res) => {
-  const tracks = await getTracksByPlaylistId(req.playlist.id);
-  res.send(tracks);
-});
-
-router.post("/:id/tracks", async (req, res) => {
-  if (!req.body) return res.status(400).send("Request body is required.");
-
-  const { trackId } = req.body;
-  if (!trackId) return res.status(400).send("Request body requires: trackId");
-
-  const playlistTrack = await createPlaylistTrack(req.playlist.id, trackId);
-  res.status(201).send(playlistTrack);
-});
+export default router;
